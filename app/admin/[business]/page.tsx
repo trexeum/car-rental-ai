@@ -8,6 +8,7 @@ type Tab = "overview" | "fleet" | "chat" | "leads" | "rentals";
 
 type Car = {
   id: string;
+  business_id: string;
   name: string;
   brand: string;
   model: string;
@@ -16,23 +17,23 @@ type Car = {
   weekly_price: number;
   deposit: number;
   mileage_limit: number;
-  available: boolean;
-  notes: string;
   image_url?: string;
+  notes?: string;
   status?: string;
-  available_from?: string;
+  available?: boolean;
   current_customer_name?: string;
   current_customer_phone?: string;
   rental_start_date?: string;
   rental_end_date?: string;
+  available_from?: string;
 };
 
 type Lead = {
   id: string;
   customer_message: string;
   ai_reply: string;
-  car_requested: string;
-  lead_status: string;
+  car_requested?: string;
+  lead_status?: string;
 };
 
 const emptyForm = {
@@ -51,63 +52,80 @@ export default function AdminDashboard() {
   const params = useParams();
   const business = params.business as string;
 
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useState<Tab>("fleet");
   const [cars, setCars] = useState<Car[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editingImageUrl, setEditingImageUrl] = useState("");
-  const [imageFile, setImageFile] = useState<File | null>(null);
   const [form, setForm] = useState(emptyForm);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [existingImageUrl, setExistingImageUrl] = useState("");
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+
   const [message, setMessage] = useState("");
   const [chatHistory, setChatHistory] = useState<{ role: string; content: string }[]>([]);
 
   async function loadCars() {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("cars")
       .select("*")
       .eq("business_id", business)
       .order("created_at", { ascending: false });
 
+    if (error) {
+      console.error(error);
+      alert("Could not load cars.");
+      return;
+    }
+
     setCars(data || []);
   }
 
   async function loadLeads() {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("leads")
       .select("*")
       .eq("business_id", business)
       .order("created_at", { ascending: false });
 
+    if (error) {
+      console.error(error);
+      return;
+    }
+
     setLeads(data || []);
   }
 
   async function uploadImage() {
-    if (!imageFile) return editingImageUrl || "";
+    if (!imageFile) return existingImageUrl || "";
 
-    const fileName = `${business}/${Date.now()}-${imageFile.name}`;
+    const cleanName = imageFile.name.replaceAll(" ", "-").toLowerCase();
+    const fileName = `${business}/${Date.now()}-${cleanName}`;
 
     const { error } = await supabase.storage
       .from("car-images")
-      .upload(fileName, imageFile);
+      .upload(fileName, imageFile, {
+        cacheControl: "3600",
+        upsert: false,
+      });
 
     if (error) {
-      console.error(error);
-      alert("Image upload failed.");
-      return editingImageUrl || "";
+      console.error("UPLOAD ERROR:", error);
+      alert(`Image upload failed: ${error.message}`);
+      return "";
     }
 
-    const {
-      data: { publicUrl },
-    } = supabase.storage.from("car-images").getPublicUrl(fileName);
+    const { data } = supabase.storage.from("car-images").getPublicUrl(fileName);
 
-    return publicUrl;
+    return data.publicUrl;
   }
 
   async function saveCar() {
     if (!form.name || !form.brand || !form.model) {
-      alert("Please fill car name, brand, and model.");
+      alert("Fill car name, brand, and model.");
       return;
     }
+
+    setSaving(true);
 
     const image_url = await uploadImage();
 
@@ -123,35 +141,42 @@ export default function AdminDashboard() {
       mileage_limit: Number(form.mileage_limit),
       image_url,
       notes: form.notes,
-      status: "available",
-      available: true,
     };
 
+    let error;
+
     if (editingId) {
-      await supabase
-        .from("cars")
-        .update({
-          ...payload,
-          status: undefined,
-          available: undefined,
-        })
-        .eq("id", editingId);
+      const res = await supabase.from("cars").update(payload).eq("id", editingId);
+      error = res.error;
     } else {
-      await supabase.from("cars").insert(payload);
+      const res = await supabase.from("cars").insert({
+        ...payload,
+        status: "available",
+        available: true,
+      });
+      error = res.error;
+    }
+
+    setSaving(false);
+
+    if (error) {
+      console.error(error);
+      alert(`Car save failed: ${error.message}`);
+      return;
     }
 
     setForm(emptyForm);
     setEditingId(null);
-    setEditingImageUrl("");
+    setExistingImageUrl("");
     setImageFile(null);
     await loadCars();
   }
 
-  function startEdit(car: Car) {
-    setEditingId(car.id);
-    setEditingImageUrl(car.image_url || "");
-    setImageFile(null);
+  function editCar(car: Car) {
     setTab("fleet");
+    setEditingId(car.id);
+    setExistingImageUrl(car.image_url || "");
+    setImageFile(null);
 
     setForm({
       name: car.name || "",
@@ -166,9 +191,16 @@ export default function AdminDashboard() {
     });
   }
 
-  async function deleteCar(id: string, name: string) {
-    if (!confirm(`Delete ${name}? This cannot be undone.`)) return;
-    await supabase.from("cars").delete().eq("id", id);
+  async function deleteCar(car: Car) {
+    if (!confirm(`Delete ${car.name}?`)) return;
+
+    const { error } = await supabase.from("cars").delete().eq("id", car.id);
+
+    if (error) {
+      alert("Delete failed.");
+      return;
+    }
+
     await loadCars();
   }
 
@@ -179,13 +211,13 @@ export default function AdminDashboard() {
     const customerPhone = prompt("Customer phone?");
     if (!customerPhone) return;
 
-    const startDate = prompt("Rental start date? Example: 2026-05-24");
+    const startDate = prompt("Start date? Example: 2026-05-24");
     if (!startDate) return;
 
-    const endDate = prompt("Rental end date? Example: 2026-05-27");
+    const endDate = prompt("End date? Example: 2026-05-27");
     if (!endDate) return;
 
-    await supabase
+    const { error } = await supabase
       .from("cars")
       .update({
         status: "booked",
@@ -198,13 +230,18 @@ export default function AdminDashboard() {
       })
       .eq("id", car.id);
 
+    if (error) {
+      alert("Start rental failed.");
+      return;
+    }
+
     await loadCars();
   }
 
   async function endRental(car: Car) {
     if (!confirm(`End rental for ${car.name}?`)) return;
 
-    await supabase
+    const { error } = await supabase
       .from("cars")
       .update({
         status: "available",
@@ -216,6 +253,11 @@ export default function AdminDashboard() {
         available_from: null,
       })
       .eq("id", car.id);
+
+    if (error) {
+      alert("End rental failed.");
+      return;
+    }
 
     await loadCars();
   }
@@ -231,8 +273,14 @@ export default function AdminDashboard() {
 
     const res = await fetch("/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: currentMessage, business, history: chatHistory }),
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        message: currentMessage,
+        business,
+        history: chatHistory,
+      }),
     });
 
     const data = await res.json();
@@ -260,11 +308,11 @@ export default function AdminDashboard() {
         </div>
 
         <div style={styles.nav}>
-          <NavButton label="Overview" active={tab === "overview"} onClick={() => setTab("overview")} />
-          <NavButton label="Fleet" active={tab === "fleet"} onClick={() => setTab("fleet")} />
-          <NavButton label="AI Chat" active={tab === "chat"} onClick={() => setTab("chat")} />
-          <NavButton label="Leads" active={tab === "leads"} onClick={() => setTab("leads")} />
-          <NavButton label="Rentals" active={tab === "rentals"} onClick={() => setTab("rentals")} />
+          <Nav label="Overview" active={tab === "overview"} onClick={() => setTab("overview")} />
+          <Nav label="Fleet" active={tab === "fleet"} onClick={() => setTab("fleet")} />
+          <Nav label="AI Chat" active={tab === "chat"} onClick={() => setTab("chat")} />
+          <Nav label="Leads" active={tab === "leads"} onClick={() => setTab("leads")} />
+          <Nav label="Rentals" active={tab === "rentals"} onClick={() => setTab("rentals")} />
         </div>
 
         <div style={styles.businessBox}>
@@ -278,9 +326,7 @@ export default function AdminDashboard() {
           <div>
             <p style={styles.smallMuted}>Business Dashboard</p>
             <h1 style={styles.title}>Fleet Command Center</h1>
-            <p style={styles.subtitle}>
-              Manage cars, AI replies, leads, and active rentals from one dashboard.
-            </p>
+            <p style={styles.subtitle}>Manage cars, AI leads, and active rentals from one dashboard.</p>
           </div>
         </header>
 
@@ -301,14 +347,12 @@ export default function AdminDashboard() {
                 placeholder="Do you have a Lamborghini Urus tomorrow?"
                 style={{ ...styles.input, minHeight: 120 }}
               />
-              <button type="button" onClick={askAI} style={styles.whiteButtonFull}>
-                Ask AI
-              </button>
+              <button onClick={askAI} style={styles.whiteButtonFull}>Ask AI</button>
             </Panel>
 
             <Panel title="Active Rentals" subtitle="Cars currently rented out.">
               <div style={styles.list}>
-                {activeRentals.slice(0, 5).map((car) => (
+                {activeRentals.map((car) => (
                   <RentalCard key={car.id} car={car} onEndRental={() => endRental(car)} />
                 ))}
                 {activeRentals.length === 0 && <Empty text="No active rentals." />}
@@ -321,7 +365,7 @@ export default function AdminDashboard() {
           <section style={styles.grid2}>
             <Panel
               title={editingId ? "Edit Vehicle" : "Add Vehicle"}
-              subtitle="Only add fleet details here. Rental/customer info is handled in Start Rental."
+              subtitle="Simple car setup. Rental/customer info is handled later."
             >
               <div style={styles.form}>
                 <Field label="Car name" value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
@@ -343,8 +387,14 @@ export default function AdminDashboard() {
                   />
                 </label>
 
-                {editingImageUrl && (
-                  <img src={editingImageUrl} alt="Current car" style={styles.previewImage} />
+                {imageFile && (
+                  <div style={styles.infoBox}>
+                    Selected image: {imageFile.name}
+                  </div>
+                )}
+
+                {existingImageUrl && (
+                  <img src={existingImageUrl} alt="Current car" style={styles.previewImage} />
                 )}
 
                 <label style={styles.field}>
@@ -358,16 +408,15 @@ export default function AdminDashboard() {
                 </label>
               </div>
 
-              <button type="button" onClick={saveCar} style={styles.whiteButtonFull}>
-                {editingId ? "Save Changes" : "Add Vehicle"}
+              <button onClick={saveCar} disabled={saving} style={styles.whiteButtonFull}>
+                {saving ? "Saving..." : editingId ? "Save Changes" : "Add Vehicle"}
               </button>
 
               {editingId && (
                 <button
-                  type="button"
                   onClick={() => {
                     setEditingId(null);
-                    setEditingImageUrl("");
+                    setExistingImageUrl("");
                     setImageFile(null);
                     setForm(emptyForm);
                   }}
@@ -384,8 +433,8 @@ export default function AdminDashboard() {
                   <CarCard
                     key={car.id}
                     car={car}
-                    onEdit={() => startEdit(car)}
-                    onDelete={() => deleteCar(car.id, car.name)}
+                    onEdit={() => editCar(car)}
+                    onDelete={() => deleteCar(car)}
                     onStartRental={() => startRental(car)}
                     onEndRental={() => endRental(car)}
                   />
@@ -405,9 +454,7 @@ export default function AdminDashboard() {
               placeholder="Do you have a G63 tomorrow under AED 2000?"
               style={{ ...styles.input, minHeight: 160 }}
             />
-            <button type="button" onClick={askAI} style={styles.whiteButtonFull}>
-              Ask AI
-            </button>
+            <button onClick={askAI} style={styles.whiteButtonFull}>Ask AI</button>
           </Panel>
         )}
 
@@ -444,8 +491,8 @@ export default function AdminDashboard() {
   );
 }
 
-function NavButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
-  return <button type="button" onClick={onClick} style={active ? styles.navActive : styles.navButton}>{label}</button>;
+function Nav({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return <button onClick={onClick} style={active ? styles.navActive : styles.navButton}>{label}</button>;
 }
 
 function Panel({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
@@ -470,7 +517,7 @@ function Field({ label, value, onChange }: { label: string; value: string; onCha
 function ChatBox({ chatHistory }: { chatHistory: { role: string; content: string }[] }) {
   return (
     <div style={styles.chatMessages}>
-      {chatHistory.length === 0 && <div style={styles.empty}>No chat yet.</div>}
+      {chatHistory.length === 0 && <Empty text="No chat yet." />}
       {chatHistory.map((msg, index) => (
         <div key={index} style={msg.role === "user" ? styles.userBubble : styles.aiBubble}>
           {msg.content}
@@ -531,12 +578,12 @@ function CarCard({ car, onEdit, onDelete, onStartRental, onEndRental }: any) {
 
         <div style={styles.actions}>
           {car.status === "booked" ? (
-            <button type="button" onClick={onEndRental} style={styles.greenButton}>End Rental</button>
+            <button onClick={onEndRental} style={styles.greenButton}>End Rental</button>
           ) : (
-            <button type="button" onClick={onStartRental} style={styles.greenButton}>Start Rental</button>
+            <button onClick={onStartRental} style={styles.greenButton}>Start Rental</button>
           )}
-          <button type="button" onClick={onEdit} style={styles.editButton}>Edit</button>
-          <button type="button" onClick={onDelete} style={styles.deleteButton}>Delete</button>
+          <button onClick={onEdit} style={styles.editButton}>Edit</button>
+          <button onClick={onDelete} style={styles.deleteButton}>Delete</button>
         </div>
       </div>
     </div>
@@ -562,9 +609,7 @@ function RentalCard({ car, onEndRental }: any) {
         <p>Countdown: {car.rental_end_date ? getDaysLeft(car.rental_end_date) : "No end date"}</p>
       </div>
 
-      <button type="button" onClick={onEndRental} style={styles.greenButtonFull}>
-        Mark Returned / End Rental
-      </button>
+      <button onClick={onEndRental} style={styles.greenButtonFull}>Mark Returned / End Rental</button>
     </div>
   );
 }
