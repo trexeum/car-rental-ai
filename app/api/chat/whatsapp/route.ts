@@ -1,91 +1,58 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
-import { supabase } from "@/lib/supabase";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-async function sendWhatsAppMessage(to: string, message: string) {
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
 
-  if (!phoneNumberId || !accessToken) {
-    console.log("Missing WhatsApp credentials");
-    return;
-  }
-
-  await fetch(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: {
-        body: message,
-      },
-    }),
-  });
-}
-
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
+export async function GET(req: NextRequest) {
+  const searchParams = req.nextUrl.searchParams;
 
   const mode = searchParams.get("hub.mode");
   const token = searchParams.get("hub.verify_token");
   const challenge = searchParams.get("hub.challenge");
 
-  if (mode === "subscribe" && token === process.env.WHATSAPP_VERIFY_TOKEN) {
-    return new Response(challenge, { status: 200 });
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    return new Response(challenge || "", { status: 200 });
   }
 
   return new Response("Forbidden", { status: 403 });
 }
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    const entry = body.entry?.[0];
-    const change = entry?.changes?.[0];
-    const value = change?.value;
-    const message = value?.messages?.[0];
+    const message =
+      body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
-    if (!message) {
-      return NextResponse.json({ success: true });
+    const customerPhone = message?.from;
+    const customerText = message?.text?.body;
+
+    if (!customerText || !customerPhone) {
+      return NextResponse.json({ ok: true });
     }
 
-    const customerPhone = message.from;
-    const customerText = message.text?.body || "";
-
-    const business = "elite-rentals";
-
-    const { data: cars } = await supabase
-      .from("cars")
-      .select("*")
-      .eq("business_id", business);
-
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
+    const ai = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
           content: `
-You are an AI WhatsApp sales assistant for a Dubai luxury car rental company.
+You are a WhatsApp AI assistant for a luxury car rental company.
 
-Only answer using the inventory below.
-Never invent cars, prices, images, or availability.
-If a car is available, send price, deposit, mileage, and image URL if available.
-If a car is booked, explain when it is available again.
-Keep replies short and natural like WhatsApp.
-Always try to collect name, phone number, rental duration, and start date.
+Your job:
+- Answer customers politely.
+- Ask for name, phone, start date, duration if they want to book.
+- Never say booking is fully confirmed until papers/payment are done by the company.
+- Keep answers short like WhatsApp.
+- If unsure, say the team will confirm shortly.
 
-Inventory:
-${JSON.stringify(cars, null, 2)}
+For now, fleet example:
+- Lamborghini Urus 2022, AED 2800/day, AED 15000/week, AED 4000 deposit, 250 km/day.
+- Bugatti Chiron 2021, AED 4000/day, AED 15000/week, AED 5000 deposit, 200 km/day.
           `,
         },
         {
@@ -95,25 +62,22 @@ ${JSON.stringify(cars, null, 2)}
       ],
     });
 
-    const aiReply = completion.choices[0].message.content || "Sorry, I could not reply.";
+    const reply =
+      ai.choices[0]?.message?.content ||
+      "Thanks, our team will confirm shortly.";
 
-    await supabase.from("leads").insert({
-      business_id: business,
-      customer_message: customerText,
-      ai_reply: aiReply,
-      customer_phone: customerPhone,
-      lead_status: "new",
+    console.log("NEW WHATSAPP LEAD:", {
+      customerPhone,
+      customerText,
+      reply,
     });
 
-    await sendWhatsAppMessage(customerPhone, aiReply);
-
-    return NextResponse.json({ success: true });
+    return NextResponse.json({
+      ok: true,
+      reply,
+    });
   } catch (error) {
-    console.error(error);
-
-    return NextResponse.json(
-      { success: false },
-      { status: 500 }
-    );
+    console.error("WHATSAPP WEBHOOK ERROR:", error);
+    return NextResponse.json({ ok: false }, { status: 500 });
   }
 }
