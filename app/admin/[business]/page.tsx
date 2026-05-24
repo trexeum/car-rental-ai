@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 
 type Tab = "dashboard" | "fleet" | "rentals" | "leads" | "ai";
-
 type CarStatus = "available" | "rented" | "maintenance";
 
 type Car = {
@@ -35,7 +34,7 @@ type Lead = {
   createdAt: string;
 };
 
-const emptyCar: Omit<Car, "id" | "status"> = {
+const emptyCar = {
   name: "",
   brand: "",
   model: "",
@@ -69,21 +68,8 @@ export default function AdminDashboard() {
     const savedLeads = localStorage.getItem(leadsKey);
 
     setCars(savedCars ? JSON.parse(savedCars) : []);
-    setLeads(
-      savedLeads
-        ? JSON.parse(savedLeads)
-        : [
-            {
-              id: crypto.randomUUID(),
-              customer: "Demo Customer",
-              phone: "+971 50 000 0000",
-              request: "Asked for a Lamborghini Urus for 3 days",
-              status: "hot",
-              createdAt: new Date().toLocaleString(),
-            },
-          ]
-    );
-  }, [business]);
+    setLeads(savedLeads ? JSON.parse(savedLeads) : []);
+  }, [storageKey, leadsKey]);
 
   function saveCars(nextCars: Car[]) {
     setCars(nextCars);
@@ -106,12 +92,16 @@ export default function AdminDashboard() {
       return;
     }
 
+    const oldCar = cars.find((car) => car.id === editingId);
+
     const car: Car = {
       id: editingId || crypto.randomUUID(),
       ...form,
-      status: editingId
-        ? cars.find((c) => c.id === editingId)?.status || "available"
-        : "available",
+      status: oldCar?.status || "available",
+      customerName: oldCar?.customerName || "",
+      customerPhone: oldCar?.customerPhone || "",
+      rentalStart: oldCar?.rentalStart || "",
+      rentalEnd: oldCar?.rentalEnd || "",
     };
 
     const nextCars = editingId
@@ -142,7 +132,7 @@ export default function AdminDashboard() {
 
   function deleteCar(id: string) {
     if (!confirm("Delete this car?")) return;
-    saveCars(cars.filter((c) => c.id !== id));
+    saveCars(cars.filter((car) => car.id !== id));
   }
 
   function startRental(car: Car) {
@@ -196,8 +186,12 @@ export default function AdminDashboard() {
   function askAI() {
     if (!aiQuestion.trim()) return;
 
+    const lowerQuestion = aiQuestion.toLowerCase();
+
     const matchedCar = cars.find((car) =>
-      aiQuestion.toLowerCase().includes(car.name.toLowerCase())
+      `${car.name} ${car.brand} ${car.model}`.toLowerCase().includes(lowerQuestion) ||
+      lowerQuestion.includes(car.name.toLowerCase()) ||
+      lowerQuestion.includes(car.model.toLowerCase())
     );
 
     const reply = matchedCar
@@ -213,7 +207,7 @@ export default function AdminDashboard() {
       customer: "AI Chat Lead",
       phone: "Not collected yet",
       request: aiQuestion,
-      status: "new",
+      status: matchedCar ? "hot" : "new",
       createdAt: new Date().toLocaleString(),
     };
 
@@ -228,11 +222,11 @@ export default function AdminDashboard() {
 
   const stats = useMemo(() => {
     const total = cars.length;
-    const available = cars.filter((c) => c.status === "available").length;
-    const rented = cars.filter((c) => c.status === "rented").length;
+    const available = cars.filter((car) => car.status === "available").length;
+    const rented = cars.filter((car) => car.status === "rented").length;
     const revenue = cars
-      .filter((c) => c.status === "rented")
-      .reduce((sum, c) => sum + Number(c.dailyPrice || 0), 0);
+      .filter((car) => car.status === "rented")
+      .reduce((sum, car) => sum + Number(car.dailyPrice || 0), 0);
 
     return { total, available, rented, revenue };
   }, [cars]);
@@ -243,7 +237,7 @@ export default function AdminDashboard() {
         <div>
           <div style={styles.brandMark}>R</div>
           <h1 style={styles.logo}>RentAI</h1>
-          <p style={styles.sidebarText}>AI operating system for rental fleets.</p>
+          <p style={styles.sidebarText}>AI operating system for premium rental fleets.</p>
         </div>
 
         <nav style={styles.nav}>
@@ -267,7 +261,7 @@ export default function AdminDashboard() {
             <p style={styles.eyebrow}>Premium Admin Dashboard</p>
             <h1 style={styles.title}>Fleet Command Center</h1>
             <p style={styles.subtitle}>
-              Manage vehicles, availability, customers, leads and AI conversations from one premium dashboard.
+              Manage vehicles, availability, customers, leads and AI conversations from one clean dashboard.
             </p>
           </div>
 
@@ -298,13 +292,13 @@ export default function AdminDashboard() {
                 {cars.slice(0, 4).map((car) => (
                   <div key={car.id} style={styles.compactCar}>
                     <div style={styles.thumb}>
-                      {car.imageUrl ? <img src={car.imageUrl} style={styles.thumbImg} /> : "No image"}
+                      {car.imageUrl ? <img src={car.imageUrl} style={styles.thumbImg} alt={car.name} /> : "No image"}
                     </div>
                     <div>
                       <strong>{car.name}</strong>
                       <p style={styles.mutedSmall}>AED {car.dailyPrice}/day</p>
                     </div>
-                    <span style={badgeStyle(car.status)}>{car.status}</span>
+                    <span style={smallBadgeStyle(car.status || "available")}>{car.status || "available"}</span>
                   </div>
                 ))}
                 {cars.length === 0 && <Empty text="No cars yet. Add your first vehicle." />}
@@ -329,7 +323,7 @@ export default function AdminDashboard() {
 
                 {form.imageUrl && (
                   <div style={styles.previewBox}>
-                    <img src={form.imageUrl} style={styles.previewImg} />
+                    <img src={form.imageUrl} style={styles.previewImg} alt="Preview" />
                   </div>
                 )}
 
@@ -382,7 +376,7 @@ export default function AdminDashboard() {
           <Panel title="Rental Tracker" subtitle="Track which cars are currently rented and when they return.">
             <div style={styles.carGrid}>
               {cars
-                .filter((c) => c.status === "rented")
+                .filter((car) => car.status === "rented")
                 .map((car) => (
                   <div key={car.id} style={styles.rentalCard}>
                     <h3>{car.name}</h3>
@@ -404,12 +398,16 @@ export default function AdminDashboard() {
         {tab === "leads" && (
           <Panel title="AI Leads Inbox" subtitle="Every customer conversation can become a lead.">
             <div style={styles.leadList}>
+              {leads.length === 0 && <Empty text="No leads yet." />}
+
               {leads.map((lead) => (
                 <div key={lead.id} style={styles.leadCard}>
                   <div>
                     <strong>{lead.customer}</strong>
                     <p style={styles.muted}>{lead.request}</p>
-                    <p style={styles.mutedSmall}>{lead.phone} • {lead.createdAt}</p>
+                    <p style={styles.mutedSmall}>
+                      {lead.phone} • {lead.createdAt}
+                    </p>
                   </div>
                   <span style={lead.status === "hot" ? styles.hotBadge : styles.newBadge}>{lead.status}</span>
                 </div>
@@ -443,7 +441,15 @@ export default function AdminDashboard() {
   );
 }
 
-function NavButton({ label, active, onClick }: any) {
+function NavButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
   return (
     <button style={active ? styles.navActive : styles.navButton} onClick={onClick}>
       {label}
@@ -451,7 +457,15 @@ function NavButton({ label, active, onClick }: any) {
   );
 }
 
-function StatCard({ label, value, helper }: any) {
+function StatCard({
+  label,
+  value,
+  helper,
+}: {
+  label: string;
+  value: string | number;
+  helper: string;
+}) {
   return (
     <div style={styles.statCard}>
       <p style={styles.mutedSmall}>{label}</p>
@@ -461,7 +475,15 @@ function StatCard({ label, value, helper }: any) {
   );
 }
 
-function Panel({ title, subtitle, children }: any) {
+function Panel({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children: React.ReactNode;
+}) {
   return (
     <div style={styles.panel}>
       <div style={styles.panelHeader}>
@@ -475,7 +497,15 @@ function Panel({ title, subtitle, children }: any) {
   );
 }
 
-function Input({ placeholder, value, onChange }: any) {
+function Input({
+  placeholder,
+  value,
+  onChange,
+}: {
+  placeholder: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
   return (
     <input
       placeholder={placeholder}
@@ -486,11 +516,11 @@ function Input({ placeholder, value, onChange }: any) {
   );
 }
 
-function Empty({ text }: any) {
+function Empty({ text }: { text: string }) {
   return <div style={styles.empty}>{text}</div>;
 }
 
-function TimelineItem({ title, text }: any) {
+function TimelineItem({ title, text }: { title: string; text: string }) {
   return (
     <div style={styles.timelineItem}>
       <div style={styles.dot} />
@@ -502,22 +532,38 @@ function TimelineItem({ title, text }: any) {
   );
 }
 
-function CarCard({ car, onEdit, onDelete, onStartRental, onEndRental }: any) {
+function CarCard({
+  car,
+  onEdit,
+  onDelete,
+  onStartRental,
+  onEndRental,
+}: {
+  car: Car;
+  onEdit: () => void;
+  onDelete: () => void;
+  onStartRental: () => void;
+  onEndRental: () => void;
+}) {
+  const status = car.status || "available";
+
   return (
     <article style={styles.carCard}>
       <div style={styles.carImageWrap}>
         {car.imageUrl ? (
-          <img src={car.imageUrl} style={styles.carImage} />
+          <img src={car.imageUrl} style={styles.carImage} alt={car.name} />
         ) : (
           <div style={styles.noImage}>No Image</div>
         )}
 
-        <span style={badgeStyle(car.status)}>{car.status}</span>
+        <span style={badgeStyle(status)}>{status}</span>
       </div>
 
       <div style={styles.carBody}>
         <h2 style={styles.carName}>{car.name}</h2>
-        <p style={styles.muted}>{car.brand} {car.model} • {car.year}</p>
+        <p style={styles.muted}>
+          {car.brand} {car.model} • {car.year}
+        </p>
 
         <div style={styles.priceGrid}>
           <Mini label="Daily" value={`AED ${car.dailyPrice}`} />
@@ -529,20 +575,28 @@ function CarCard({ car, onEdit, onDelete, onStartRental, onEndRental }: any) {
         {car.notes && <p style={styles.note}>{car.notes}</p>}
 
         <div style={styles.actions}>
-          {car.status === "rented" ? (
-            <button style={styles.greenButton} onClick={onEndRental}>End Rental</button>
+          {status === "rented" ? (
+            <button style={styles.greenButton} onClick={onEndRental}>
+              End Rental
+            </button>
           ) : (
-            <button style={styles.greenButton} onClick={onStartRental}>Start Rental</button>
+            <button style={styles.greenButton} onClick={onStartRental}>
+              Start Rental
+            </button>
           )}
-          <button style={styles.editButton} onClick={onEdit}>Edit</button>
-          <button style={styles.deleteButton} onClick={onDelete}>Delete</button>
+          <button style={styles.editButton} onClick={onEdit}>
+            Edit
+          </button>
+          <button style={styles.deleteButton} onClick={onDelete}>
+            Delete
+          </button>
         </div>
       </div>
     </article>
   );
 }
 
-function Mini({ label, value }: any) {
+function Mini({ label, value }: { label: string; value: string }) {
   return (
     <div style={styles.mini}>
       <p style={styles.mutedSmall}>{label}</p>
@@ -557,7 +611,13 @@ function badgeStyle(status: CarStatus) {
   return styles.availableBadge;
 }
 
-const styles: Record<string, any> = {
+function smallBadgeStyle(status: CarStatus) {
+  if (status === "rented") return styles.smallRentedBadge;
+  if (status === "maintenance") return styles.smallMaintenanceBadge;
+  return styles.smallAvailableBadge;
+}
+
+const styles: Record<string, React.CSSProperties> = {
   page: {
     minHeight: "100vh",
     display: "flex",
@@ -688,7 +748,8 @@ const styles: Record<string, any> = {
     marginBottom: 24,
   },
   statCard: {
-    background: "linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.035))",
+    background:
+      "linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.035))",
     border: "1px solid rgba(255,255,255,0.09)",
     borderRadius: 26,
     padding: 22,
@@ -778,7 +839,11 @@ const styles: Record<string, any> = {
     border: "1px solid rgba(255,255,255,0.1)",
   },
   previewImg: { width: "100%", height: 190, objectFit: "cover", display: "block" },
-  carGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(360px,1fr))", gap: 18 },
+  carGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill,minmax(360px,1fr))",
+    gap: 18,
+  },
   carCard: {
     background: "rgba(0,0,0,0.45)",
     border: "1px solid rgba(255,255,255,0.09)",
@@ -872,6 +937,33 @@ const styles: Record<string, any> = {
     padding: "8px 12px",
     borderRadius: 999,
     fontSize: 12,
+    fontWeight: 950,
+    textTransform: "capitalize",
+  },
+  smallAvailableBadge: {
+    background: "rgba(16,185,129,0.18)",
+    color: "#34d399",
+    padding: "7px 10px",
+    borderRadius: 999,
+    fontSize: 11,
+    fontWeight: 950,
+    textTransform: "capitalize",
+  },
+  smallRentedBadge: {
+    background: "rgba(251,191,36,0.18)",
+    color: "#fbbf24",
+    padding: "7px 10px",
+    borderRadius: 999,
+    fontSize: 11,
+    fontWeight: 950,
+    textTransform: "capitalize",
+  },
+  smallMaintenanceBadge: {
+    background: "rgba(248,113,113,0.18)",
+    color: "#f87171",
+    padding: "7px 10px",
+    borderRadius: 999,
+    fontSize: 11,
     fontWeight: 950,
     textTransform: "capitalize",
   },
