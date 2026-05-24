@@ -1,581 +1,481 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import { supabase } from "@/lib/supabase";
 
-type Tab = "fleet" | "chat" | "leads" | "rentals";
+type Tab = "dashboard" | "fleet" | "rentals" | "leads" | "ai";
 
-const emptyForm = {
+type CarStatus = "available" | "rented" | "maintenance";
+
+type Car = {
+  id: string;
+  name: string;
+  brand: string;
+  model: string;
+  year: string;
+  dailyPrice: string;
+  weeklyPrice: string;
+  deposit: string;
+  mileage: string;
+  imageUrl: string;
+  notes: string;
+  status: CarStatus;
+  customerName?: string;
+  customerPhone?: string;
+  rentalStart?: string;
+  rentalEnd?: string;
+};
+
+type Lead = {
+  id: string;
+  customer: string;
+  phone: string;
+  request: string;
+  status: "new" | "hot" | "closed";
+  createdAt: string;
+};
+
+const emptyCar: Omit<Car, "id" | "status"> = {
   name: "",
   brand: "",
   model: "",
   year: "",
-  daily_price: "",
-  weekly_price: "",
+  dailyPrice: "",
+  weeklyPrice: "",
   deposit: "",
-  mileage_limit: "",
-  image_url: "",
+  mileage: "",
+  imageUrl: "",
   notes: "",
 };
 
 export default function AdminDashboard() {
   const params = useParams();
-  const business = params.business as string;
+  const business = String(params.business || "demo");
 
-  const [tab, setTab] = useState<Tab>("fleet");
-  const [cars, setCars] = useState<any[]>([]);
-  const [leads, setLeads] = useState<any[]>([]);
-  const [form, setForm] = useState(emptyForm);
+  const storageKey = `rentai-cars-${business}`;
+  const leadsKey = `rentai-leads-${business}`;
+
+  const [tab, setTab] = useState<Tab>("dashboard");
+  const [cars, setCars] = useState<Car[]>([]);
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [form, setForm] = useState(emptyCar);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState("");
+  const [aiQuestion, setAiQuestion] = useState("");
+  const [aiReply, setAiReply] = useState("");
 
-  const [message, setMessage] = useState("");
-  const [chatHistory, setChatHistory] = useState<
-    { role: string; content: string }[]
-  >([]);
+  useEffect(() => {
+    const savedCars = localStorage.getItem(storageKey);
+    const savedLeads = localStorage.getItem(leadsKey);
 
-  async function loadCars() {
-    const { data, error } = await supabase
-      .from("cars")
-      .select("*")
-      .eq("business_id", business)
-      .order("created_at", { ascending: false });
+    setCars(savedCars ? JSON.parse(savedCars) : []);
+    setLeads(
+      savedLeads
+        ? JSON.parse(savedLeads)
+        : [
+            {
+              id: crypto.randomUUID(),
+              customer: "Demo Customer",
+              phone: "+971 50 000 0000",
+              request: "Asked for a Lamborghini Urus for 3 days",
+              status: "hot",
+              createdAt: new Date().toLocaleString(),
+            },
+          ]
+    );
+  }, [business]);
 
-    if (error) {
-      alert(`Could not load cars: ${error.message}`);
-      return;
-    }
-
-    setCars(data || []);
+  function saveCars(nextCars: Car[]) {
+    setCars(nextCars);
+    localStorage.setItem(storageKey, JSON.stringify(nextCars));
   }
 
-  async function loadLeads() {
-    const { data } = await supabase
-      .from("leads")
-      .select("*")
-      .eq("business_id", business)
-      .order("created_at", { ascending: false });
-
-    setLeads(data || []);
+  function saveLeads(nextLeads: Lead[]) {
+    setLeads(nextLeads);
+    localStorage.setItem(leadsKey, JSON.stringify(nextLeads));
   }
 
-  async function saveCar() {
+  function resetForm() {
+    setForm(emptyCar);
+    setEditingId(null);
+  }
+
+  function saveCar() {
     if (!form.name || !form.brand || !form.model) {
-      alert("Fill car name, brand, and model.");
+      alert("Add at least car name, brand, and model.");
       return;
     }
 
-    setSaving(true);
-
-    const payload = {
-      business_id: business,
-      name: form.name,
-      brand: form.brand,
-      model: form.model,
-      year: Number(form.year),
-      daily_price: Number(form.daily_price),
-      weekly_price: Number(form.weekly_price),
-      deposit: Number(form.deposit),
-      mileage_limit: Number(form.mileage_limit),
-      image_url: form.image_url,
-      notes: form.notes,
+    const car: Car = {
+      id: editingId || crypto.randomUUID(),
+      ...form,
+      status: editingId
+        ? cars.find((c) => c.id === editingId)?.status || "available"
+        : "available",
     };
 
-    const res = editingId
-      ? await supabase.from("cars").update(payload).eq("id", editingId)
-      : await supabase.from("cars").insert({
-          ...payload,
-          status: "available",
-          available: true,
-        });
+    const nextCars = editingId
+      ? cars.map((c) => (c.id === editingId ? car : c))
+      : [car, ...cars];
 
-    setSaving(false);
-
-    if (res.error) {
-      alert(`Car save failed: ${res.error.message}`);
-      return;
-    }
-
-    setForm(emptyForm);
-    setEditingId(null);
-    await loadCars();
+    saveCars(nextCars);
+    resetForm();
   }
 
-  function editCar(car: any) {
+  function editCar(car: Car) {
     setEditingId(car.id);
-
     setForm({
-      name: car.name || "",
-      brand: car.brand || "",
-      model: car.model || "",
-      year: String(car.year || ""),
-      daily_price: String(car.daily_price || ""),
-      weekly_price: String(car.weekly_price || ""),
-      deposit: String(car.deposit || ""),
-      mileage_limit: String(car.mileage_limit || ""),
-      image_url: car.image_url || "",
-      notes: car.notes || "",
+      name: car.name,
+      brand: car.brand,
+      model: car.model,
+      year: car.year,
+      dailyPrice: car.dailyPrice,
+      weeklyPrice: car.weeklyPrice,
+      deposit: car.deposit,
+      mileage: car.mileage,
+      imageUrl: car.imageUrl,
+      notes: car.notes,
     });
+    setTab("fleet");
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  async function deleteCar(car: any) {
-    if (!confirm(`Delete ${car.name}?`)) return;
-
-    await supabase.from("cars").delete().eq("id", car.id);
-    await loadCars();
+  function deleteCar(id: string) {
+    if (!confirm("Delete this car?")) return;
+    saveCars(cars.filter((c) => c.id !== id));
   }
 
-  async function startRental(car: any) {
+  function startRental(car: Car) {
     const customerName = prompt("Customer name?");
     if (!customerName) return;
 
     const customerPhone = prompt("Customer phone?");
     if (!customerPhone) return;
 
-    const startDate = prompt("Start date? Example: 2026-05-24");
-    if (!startDate) return;
+    const rentalStart = prompt("Start date? Example: 2026-05-24");
+    if (!rentalStart) return;
 
-    const endDate = prompt("End date? Example: 2026-05-27");
-    if (!endDate) return;
+    const rentalEnd = prompt("End date? Example: 2026-05-27");
+    if (!rentalEnd) return;
 
-    await supabase
-      .from("cars")
-      .update({
-        status: "booked",
-        available: false,
-        current_customer_name: customerName,
-        current_customer_phone: customerPhone,
-        rental_start_date: startDate,
-        rental_end_date: endDate,
-        available_from: endDate,
-      })
-      .eq("id", car.id);
-
-    await loadCars();
+    saveCars(
+      cars.map((c) =>
+        c.id === car.id
+          ? {
+              ...c,
+              status: "rented",
+              customerName,
+              customerPhone,
+              rentalStart,
+              rentalEnd,
+            }
+          : c
+      )
+    );
   }
 
-  async function endRental(car: any) {
-    if (!confirm(`End rental for ${car.name}?`)) return;
+  function endRental(car: Car) {
+    if (!confirm(`Mark ${car.name} as returned?`)) return;
 
-    await supabase
-      .from("cars")
-      .update({
-        status: "available",
-        available: true,
-        current_customer_name: "",
-        current_customer_phone: "",
-        rental_start_date: null,
-        rental_end_date: null,
-        available_from: null,
-      })
-      .eq("id", car.id);
-
-    await loadCars();
+    saveCars(
+      cars.map((c) =>
+        c.id === car.id
+          ? {
+              ...c,
+              status: "available",
+              customerName: "",
+              customerPhone: "",
+              rentalStart: "",
+              rentalEnd: "",
+            }
+          : c
+      )
+    );
   }
 
-  async function askAI() {
-    if (!message.trim()) return;
+  function askAI() {
+    if (!aiQuestion.trim()) return;
 
-    const currentMessage = message;
+    const matchedCar = cars.find((car) =>
+      aiQuestion.toLowerCase().includes(car.name.toLowerCase())
+    );
 
-    const updatedHistory = [
-      ...chatHistory,
-      { role: "user", content: currentMessage },
-    ];
+    const reply = matchedCar
+      ? matchedCar.status === "available"
+        ? `${matchedCar.name} is available. Daily price is AED ${matchedCar.dailyPrice}, weekly is AED ${matchedCar.weeklyPrice}, deposit is AED ${matchedCar.deposit}, mileage limit is ${matchedCar.mileage} km/day.`
+        : `${matchedCar.name} is currently rented until ${matchedCar.rentalEnd || "the return date"}.`
+      : "I can help with availability, prices, deposits, mileage, and rental dates. Please mention the car model you want.";
 
-    setChatHistory(updatedHistory);
-    setMessage("");
+    setAiReply(reply);
 
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        message: currentMessage,
-        business,
-        history: chatHistory,
-      }),
-    });
+    const newLead: Lead = {
+      id: crypto.randomUUID(),
+      customer: "AI Chat Lead",
+      phone: "Not collected yet",
+      request: aiQuestion,
+      status: "new",
+      createdAt: new Date().toLocaleString(),
+    };
 
-    const data = await res.json();
-
-    setChatHistory([
-      ...updatedHistory,
-      { role: "assistant", content: data.reply },
-    ]);
-
-    await loadLeads();
+    saveLeads([newLead, ...leads]);
   }
 
-  useEffect(() => {
-    loadCars();
-    loadLeads();
-  }, []);
+  const filteredCars = cars.filter((car) =>
+    `${car.name} ${car.brand} ${car.model}`
+      .toLowerCase()
+      .includes(search.toLowerCase())
+  );
 
-  const availableCars = cars.filter(
-    (car) => (car.status || "available") === "available"
-  ).length;
+  const stats = useMemo(() => {
+    const total = cars.length;
+    const available = cars.filter((c) => c.status === "available").length;
+    const rented = cars.filter((c) => c.status === "rented").length;
+    const revenue = cars
+      .filter((c) => c.status === "rented")
+      .reduce((sum, c) => sum + Number(c.dailyPrice || 0), 0);
 
-  const bookedCars = cars.filter((car) => car.status === "booked").length;
-
-  const activeRentals = cars.filter((car) => car.status === "booked");
+    return { total, available, rented, revenue };
+  }, [cars]);
 
   return (
     <main style={styles.page}>
       <aside style={styles.sidebar}>
         <div>
+          <div style={styles.brandMark}>R</div>
           <h1 style={styles.logo}>RentAI</h1>
-          <p style={styles.muted}>AI fleet assistant</p>
+          <p style={styles.sidebarText}>AI operating system for rental fleets.</p>
         </div>
 
-        <div style={styles.navBox}>
-          <button
-            onClick={() => setTab("fleet")}
-            style={tab === "fleet" ? styles.activeNav : styles.nav}
-          >
-            Fleet
-          </button>
+        <nav style={styles.nav}>
+          <NavButton label="Dashboard" active={tab === "dashboard"} onClick={() => setTab("dashboard")} />
+          <NavButton label="Fleet" active={tab === "fleet"} onClick={() => setTab("fleet")} />
+          <NavButton label="Rentals" active={tab === "rentals"} onClick={() => setTab("rentals")} />
+          <NavButton label="Leads" active={tab === "leads"} onClick={() => setTab("leads")} />
+          <NavButton label="AI Assistant" active={tab === "ai"} onClick={() => setTab("ai")} />
+        </nav>
 
-          <button
-            onClick={() => setTab("chat")}
-            style={tab === "chat" ? styles.activeNav : styles.nav}
-          >
-            AI Chat
-          </button>
-
-          <button
-            onClick={() => setTab("leads")}
-            style={tab === "leads" ? styles.activeNav : styles.nav}
-          >
-            Leads
-          </button>
-
-          <button
-            onClick={() => setTab("rentals")}
-            style={tab === "rentals" ? styles.activeNav : styles.nav}
-          >
-            Rentals
-          </button>
-        </div>
-
-        <div style={styles.businessBox}>
-          <p style={styles.smallMuted}>Business</p>
+        <div style={styles.businessCard}>
+          <p style={styles.mutedSmall}>Business workspace</p>
           <strong>{business}</strong>
+          <p style={styles.mutedSmall}>Live admin preview</p>
         </div>
       </aside>
 
-      <section style={styles.main}>
-        <header style={styles.header}>
-          <p style={styles.smallMuted}>Business Dashboard</p>
-          <h1 style={styles.title}>Fleet Command Center</h1>
-          <p style={styles.subtitle}>
-            Manage cars, AI leads, and active rentals.
-          </p>
+      <section style={styles.content}>
+        <header style={styles.hero}>
+          <div>
+            <p style={styles.eyebrow}>Premium Admin Dashboard</p>
+            <h1 style={styles.title}>Fleet Command Center</h1>
+            <p style={styles.subtitle}>
+              Manage vehicles, availability, customers, leads and AI conversations from one premium dashboard.
+            </p>
+          </div>
+
+          <button style={styles.primaryButton} onClick={() => setTab("fleet")}>
+            Add Vehicle
+          </button>
         </header>
 
-        <section style={styles.stats}>
-          <Stat label="Total Cars" value={cars.length} />
-          <Stat label="Available" value={availableCars} />
-          <Stat label="Booked" value={bookedCars} />
-          <Stat label="AI Leads" value={leads.length} />
+        <section style={styles.statGrid}>
+          <StatCard label="Total Fleet" value={stats.total} helper="Cars connected to AI" />
+          <StatCard label="Available" value={stats.available} helper="Ready to rent" />
+          <StatCard label="Rented" value={stats.rented} helper="Active rentals" />
+          <StatCard label="Daily Active Value" value={`AED ${stats.revenue}`} helper="From rented cars" />
         </section>
 
+        {tab === "dashboard" && (
+          <section style={styles.dashboardGrid}>
+            <Panel title="Live Operations" subtitle="Snapshot of your business right now.">
+              <div style={styles.timeline}>
+                <TimelineItem title="AI lead capture" text={`${leads.length} leads collected in this workspace.`} />
+                <TimelineItem title="Fleet readiness" text={`${stats.available} cars are available for customers.`} />
+                <TimelineItem title="Rental tracker" text={`${stats.rented} cars are currently rented.`} />
+              </div>
+            </Panel>
+
+            <Panel title="Top Fleet" subtitle="Your latest vehicles.">
+              <div style={styles.compactList}>
+                {cars.slice(0, 4).map((car) => (
+                  <div key={car.id} style={styles.compactCar}>
+                    <div style={styles.thumb}>
+                      {car.imageUrl ? <img src={car.imageUrl} style={styles.thumbImg} /> : "No image"}
+                    </div>
+                    <div>
+                      <strong>{car.name}</strong>
+                      <p style={styles.mutedSmall}>AED {car.dailyPrice}/day</p>
+                    </div>
+                    <span style={badgeStyle(car.status)}>{car.status}</span>
+                  </div>
+                ))}
+                {cars.length === 0 && <Empty text="No cars yet. Add your first vehicle." />}
+              </div>
+            </Panel>
+          </section>
+        )}
+
         {tab === "fleet" && (
-          <section style={styles.grid}>
-            <div style={styles.card}>
-              <h2>{editingId ? "Edit Vehicle" : "Add Vehicle"}</h2>
-              <p style={styles.muted}>
-                Paste an image URL for now. This is stable and won’t break.
-              </p>
+          <section style={styles.fleetGrid}>
+            <Panel title={editingId ? "Edit Vehicle" : "Add Vehicle"} subtitle="Simple setup for rental businesses.">
+              <div style={styles.formGrid}>
+                <Input placeholder="Car name e.g. Lamborghini Urus" value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
+                <Input placeholder="Brand e.g. Lamborghini" value={form.brand} onChange={(v) => setForm({ ...form, brand: v })} />
+                <Input placeholder="Model e.g. Urus" value={form.model} onChange={(v) => setForm({ ...form, model: v })} />
+                <Input placeholder="Year e.g. 2022" value={form.year} onChange={(v) => setForm({ ...form, year: v })} />
+                <Input placeholder="Daily price AED" value={form.dailyPrice} onChange={(v) => setForm({ ...form, dailyPrice: v })} />
+                <Input placeholder="Weekly price AED" value={form.weeklyPrice} onChange={(v) => setForm({ ...form, weeklyPrice: v })} />
+                <Input placeholder="Deposit AED" value={form.deposit} onChange={(v) => setForm({ ...form, deposit: v })} />
+                <Input placeholder="Mileage limit km/day" value={form.mileage} onChange={(v) => setForm({ ...form, mileage: v })} />
+                <Input placeholder="Image URL" value={form.imageUrl} onChange={(v) => setForm({ ...form, imageUrl: v })} />
 
-              <div style={styles.form}>
-                <Input
-                  placeholder="Car name"
-                  value={form.name}
-                  onChange={(v) => setForm({ ...form, name: v })}
-                />
-
-                <Input
-                  placeholder="Brand"
-                  value={form.brand}
-                  onChange={(v) => setForm({ ...form, brand: v })}
-                />
-
-                <Input
-                  placeholder="Model"
-                  value={form.model}
-                  onChange={(v) => setForm({ ...form, model: v })}
-                />
-
-                <Input
-                  placeholder="Year"
-                  value={form.year}
-                  onChange={(v) => setForm({ ...form, year: v })}
-                />
-
-                <Input
-                  placeholder="Daily price AED"
-                  value={form.daily_price}
-                  onChange={(v) => setForm({ ...form, daily_price: v })}
-                />
-
-                <Input
-                  placeholder="Weekly price AED"
-                  value={form.weekly_price}
-                  onChange={(v) => setForm({ ...form, weekly_price: v })}
-                />
-
-                <Input
-                  placeholder="Deposit AED"
-                  value={form.deposit}
-                  onChange={(v) => setForm({ ...form, deposit: v })}
-                />
-
-                <Input
-                  placeholder="Mileage limit"
-                  value={form.mileage_limit}
-                  onChange={(v) => setForm({ ...form, mileage_limit: v })}
-                />
-
-                <Input
-                  placeholder="Image URL"
-                  value={form.image_url}
-                  onChange={(v) => setForm({ ...form, image_url: v })}
-                />
-
-                {form.image_url && (
-                  <img
-                    src={form.image_url}
-                    alt="Preview"
-                    style={styles.preview}
-                  />
+                {form.imageUrl && (
+                  <div style={styles.previewBox}>
+                    <img src={form.imageUrl} style={styles.previewImg} />
+                  </div>
                 )}
 
                 <textarea
-                  placeholder="Notes"
+                  placeholder="Notes: color, free delivery, minimum rental days..."
                   value={form.notes}
-                  onChange={(e) =>
-                    setForm({ ...form, notes: e.target.value })
-                  }
+                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
                   style={styles.textarea}
                 />
 
-                <button
-                  onClick={saveCar}
-                  disabled={saving}
-                  style={styles.whiteButtonFull}
-                >
-                  {saving
-                    ? "Saving..."
-                    : editingId
-                    ? "Save Changes"
-                    : "Add Vehicle"}
+                <button style={styles.primaryButtonFull} onClick={saveCar}>
+                  {editingId ? "Save Changes" : "Add Vehicle"}
                 </button>
 
                 {editingId && (
-                  <button
-                    onClick={() => {
-                      setEditingId(null);
-                      setForm(emptyForm);
-                    }}
-                    style={styles.darkButtonFull}
-                  >
+                  <button style={styles.secondaryButtonFull} onClick={resetForm}>
                     Cancel Edit
                   </button>
                 )}
               </div>
-            </div>
+            </Panel>
 
-            <div style={styles.card}>
-              <h2>Fleet Inventory</h2>
-              <p style={styles.muted}>{cars.length} vehicles connected to AI.</p>
+            <Panel title="Fleet Inventory" subtitle="Search, edit, rent, or delete cars.">
+              <input
+                placeholder="Search fleet..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                style={styles.search}
+              />
 
-              <div style={styles.list}>
-                {cars.length === 0 && (
-                  <div style={styles.empty}>No cars yet.</div>
-                )}
-
-                {cars.map((car) => (
-                  <div key={car.id} style={styles.carCard}>
-                    {car.image_url ? (
-                      <img
-                        src={car.image_url}
-                        alt={car.name}
-                        style={styles.carImage}
-                      />
-                    ) : (
-                      <div style={styles.noImage}>No Image</div>
-                    )}
-
-                    <div style={styles.carBody}>
-                      <div style={styles.row}>
-                        <div>
-                          <h2 style={styles.carTitle}>{car.name}</h2>
-                          <p style={styles.muted}>
-                            {car.brand} {car.model} · {car.year}
-                          </p>
-                        </div>
-
-                        <span
-                          style={
-                            car.status === "booked"
-                              ? styles.booked
-                              : styles.available
-                          }
-                        >
-                          {car.status || "available"}
-                        </span>
-                      </div>
-
-                      <div style={styles.miniGrid}>
-                        <Mini label="Daily" value={`AED ${car.daily_price}`} />
-                        <Mini label="Weekly" value={`AED ${car.weekly_price}`} />
-                        <Mini label="Deposit" value={`AED ${car.deposit}`} />
-                        <Mini
-                          label="Mileage"
-                          value={`${car.mileage_limit} km/day`}
-                        />
-                      </div>
-
-                      {car.notes && <div style={styles.info}>{car.notes}</div>}
-
-                      <div style={styles.actions}>
-                        {car.status === "booked" ? (
-                          <button
-                            onClick={() => endRental(car)}
-                            style={styles.greenButton}
-                          >
-                            End Rental
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => startRental(car)}
-                            style={styles.greenButton}
-                          >
-                            Start Rental
-                          </button>
-                        )}
-
-                        <button
-                          onClick={() => editCar(car)}
-                          style={styles.editButton}
-                        >
-                          Edit
-                        </button>
-
-                        <button
-                          onClick={() => deleteCar(car)}
-                          style={styles.deleteButton}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  </div>
+              <div style={styles.carGrid}>
+                {filteredCars.map((car) => (
+                  <CarCard
+                    key={car.id}
+                    car={car}
+                    onEdit={() => editCar(car)}
+                    onDelete={() => deleteCar(car.id)}
+                    onStartRental={() => startRental(car)}
+                    onEndRental={() => endRental(car)}
+                  />
                 ))}
+
+                {filteredCars.length === 0 && <Empty text="No cars found." />}
               </div>
-            </div>
+            </Panel>
           </section>
         )}
 
-        {tab === "chat" && (
-          <div style={styles.card}>
-            <h2>AI Chat Test</h2>
+        {tab === "rentals" && (
+          <Panel title="Rental Tracker" subtitle="Track which cars are currently rented and when they return.">
+            <div style={styles.carGrid}>
+              {cars
+                .filter((c) => c.status === "rented")
+                .map((car) => (
+                  <div key={car.id} style={styles.rentalCard}>
+                    <h3>{car.name}</h3>
+                    <p style={styles.muted}>Customer: {car.customerName}</p>
+                    <p style={styles.muted}>Phone: {car.customerPhone}</p>
+                    <p style={styles.muted}>Start: {car.rentalStart}</p>
+                    <p style={styles.muted}>End: {car.rentalEnd}</p>
+                    <button style={styles.primaryButtonFull} onClick={() => endRental(car)}>
+                      Mark Returned
+                    </button>
+                  </div>
+                ))}
 
-            <div style={styles.chatMessages}>
-              {chatHistory.map((msg, index) => (
-                <div
-                  key={index}
-                  style={
-                    msg.role === "user" ? styles.userBubble : styles.aiBubble
-                  }
-                >
-                  {msg.content}
-                </div>
-              ))}
+              {stats.rented === 0 && <Empty text="No active rentals." />}
             </div>
-
-            <textarea
-              placeholder="Ask the AI..."
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              style={styles.textarea}
-            />
-
-            <button onClick={askAI} style={styles.whiteButtonFull}>
-              Ask AI
-            </button>
-          </div>
+          </Panel>
         )}
 
         {tab === "leads" && (
-          <div style={styles.card}>
-            <h2>Leads</h2>
-
-            <div style={styles.list}>
-              {leads.length === 0 && <div style={styles.empty}>No leads yet.</div>}
-
+          <Panel title="AI Leads Inbox" subtitle="Every customer conversation can become a lead.">
+            <div style={styles.leadList}>
               {leads.map((lead) => (
                 <div key={lead.id} style={styles.leadCard}>
-                  <strong>{lead.car_requested || "Unknown car"}</strong>
-                  <p>{lead.customer_message}</p>
-                  <div style={styles.info}>{lead.ai_reply}</div>
+                  <div>
+                    <strong>{lead.customer}</strong>
+                    <p style={styles.muted}>{lead.request}</p>
+                    <p style={styles.mutedSmall}>{lead.phone} • {lead.createdAt}</p>
+                  </div>
+                  <span style={lead.status === "hot" ? styles.hotBadge : styles.newBadge}>{lead.status}</span>
                 </div>
               ))}
             </div>
-          </div>
+          </Panel>
         )}
 
-        {tab === "rentals" && (
-          <div style={styles.card}>
-            <h2>Active Rentals</h2>
+        {tab === "ai" && (
+          <Panel title="AI Assistant Test" subtitle="Simulate what your WhatsApp AI will answer.">
+            <textarea
+              placeholder="Example: Do you have a Lamborghini Urus for 3 days?"
+              value={aiQuestion}
+              onChange={(e) => setAiQuestion(e.target.value)}
+              style={styles.aiBox}
+            />
+            <button style={styles.primaryButtonFull} onClick={askAI}>
+              Ask AI
+            </button>
 
-            <div style={styles.list}>
-              {activeRentals.length === 0 && (
-                <div style={styles.empty}>No active rentals.</div>
-              )}
-
-              {activeRentals.map((car) => (
-                <div key={car.id} style={styles.leadCard}>
-                  <h3>{car.name}</h3>
-
-                  <div style={styles.info}>
-                    Customer: {car.current_customer_name}
-                    <br />
-                    Phone: {car.current_customer_phone}
-                    <br />
-                    Start: {car.rental_start_date}
-                    <br />
-                    End: {car.rental_end_date}
-                  </div>
-
-                  <button
-                    onClick={() => endRental(car)}
-                    style={styles.greenButtonFull}
-                  >
-                    End Rental
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
+            {aiReply && (
+              <div style={styles.aiReply}>
+                <p style={styles.mutedSmall}>AI reply</p>
+                <strong>{aiReply}</strong>
+              </div>
+            )}
+          </Panel>
         )}
       </section>
     </main>
   );
 }
 
-function Input({
-  placeholder,
-  value,
-  onChange,
-}: {
-  placeholder: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
+function NavButton({ label, active, onClick }: any) {
+  return (
+    <button style={active ? styles.navActive : styles.navButton} onClick={onClick}>
+      {label}
+    </button>
+  );
+}
+
+function StatCard({ label, value, helper }: any) {
+  return (
+    <div style={styles.statCard}>
+      <p style={styles.mutedSmall}>{label}</p>
+      <h2 style={styles.statValue}>{value}</h2>
+      <p style={styles.mutedSmall}>{helper}</p>
+    </div>
+  );
+}
+
+function Panel({ title, subtitle, children }: any) {
+  return (
+    <div style={styles.panel}>
+      <div style={styles.panelHeader}>
+        <div>
+          <h2 style={styles.panelTitle}>{title}</h2>
+          <p style={styles.muted}>{subtitle}</p>
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function Input({ placeholder, value, onChange }: any) {
   return (
     <input
       placeholder={placeholder}
@@ -586,391 +486,475 @@ function Input({
   );
 }
 
-function Stat({ label, value }: { label: string; value: number }) {
+function Empty({ text }: any) {
+  return <div style={styles.empty}>{text}</div>;
+}
+
+function TimelineItem({ title, text }: any) {
   return (
-    <div style={styles.stat}>
-      <span style={styles.smallMuted}>{label}</span>
-      <strong style={styles.statValue}>{value}</strong>
+    <div style={styles.timelineItem}>
+      <div style={styles.dot} />
+      <div>
+        <strong>{title}</strong>
+        <p style={styles.muted}>{text}</p>
+      </div>
     </div>
   );
 }
 
-function Mini({ label, value }: { label: string; value: string }) {
+function CarCard({ car, onEdit, onDelete, onStartRental, onEndRental }: any) {
+  return (
+    <article style={styles.carCard}>
+      <div style={styles.carImageWrap}>
+        {car.imageUrl ? (
+          <img src={car.imageUrl} style={styles.carImage} />
+        ) : (
+          <div style={styles.noImage}>No Image</div>
+        )}
+
+        <span style={badgeStyle(car.status)}>{car.status}</span>
+      </div>
+
+      <div style={styles.carBody}>
+        <h2 style={styles.carName}>{car.name}</h2>
+        <p style={styles.muted}>{car.brand} {car.model} • {car.year}</p>
+
+        <div style={styles.priceGrid}>
+          <Mini label="Daily" value={`AED ${car.dailyPrice}`} />
+          <Mini label="Weekly" value={`AED ${car.weeklyPrice}`} />
+          <Mini label="Deposit" value={`AED ${car.deposit}`} />
+          <Mini label="Mileage" value={`${car.mileage} km/day`} />
+        </div>
+
+        {car.notes && <p style={styles.note}>{car.notes}</p>}
+
+        <div style={styles.actions}>
+          {car.status === "rented" ? (
+            <button style={styles.greenButton} onClick={onEndRental}>End Rental</button>
+          ) : (
+            <button style={styles.greenButton} onClick={onStartRental}>Start Rental</button>
+          )}
+          <button style={styles.editButton} onClick={onEdit}>Edit</button>
+          <button style={styles.deleteButton} onClick={onDelete}>Delete</button>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function Mini({ label, value }: any) {
   return (
     <div style={styles.mini}>
-      <span style={styles.smallMuted}>{label}</span>
+      <p style={styles.mutedSmall}>{label}</p>
       <strong>{value}</strong>
     </div>
   );
 }
 
+function badgeStyle(status: CarStatus) {
+  if (status === "rented") return styles.rentedBadge;
+  if (status === "maintenance") return styles.maintenanceBadge;
+  return styles.availableBadge;
+}
+
 const styles: Record<string, any> = {
   page: {
     minHeight: "100vh",
-    background: "#050505",
-    color: "white",
     display: "flex",
-    fontFamily: "Arial, Helvetica, sans-serif",
+    background:
+      "radial-gradient(circle at top left, rgba(255,255,255,0.09), transparent 32%), #050505",
+    color: "white",
+    fontFamily:
+      "Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Arial",
   },
-
   sidebar: {
-    width: 270,
-    padding: 30,
-    borderRight: "1px solid #202020",
-    background: "#080808",
+    width: 290,
+    minHeight: "100vh",
+    padding: 28,
+    background: "rgba(8,8,8,0.92)",
+    borderRight: "1px solid rgba(255,255,255,0.08)",
+    position: "sticky",
+    top: 0,
     display: "flex",
     flexDirection: "column",
     gap: 28,
-    minHeight: "100vh",
   },
-
-  logo: {
-    fontSize: 36,
-    fontWeight: 900,
-    margin: 0,
+  brandMark: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    background: "linear-gradient(135deg,#fff,#777)",
+    color: "#000",
+    display: "grid",
+    placeItems: "center",
+    fontWeight: 1000,
+    fontSize: 22,
+    marginBottom: 14,
   },
-
-  navBox: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 10,
-  },
-
-  nav: {
+  logo: { margin: 0, fontSize: 34, letterSpacing: -1.2 },
+  sidebarText: { color: "#9ca3af", lineHeight: 1.5, marginTop: 8 },
+  nav: { display: "grid", gap: 10 },
+  navButton: {
     background: "transparent",
-    color: "#aaa",
-    border: "none",
-    borderRadius: 14,
+    color: "#a3a3a3",
+    border: "1px solid transparent",
+    borderRadius: 16,
     padding: "14px 16px",
-    fontWeight: 900,
-    cursor: "pointer",
     textAlign: "left",
+    fontWeight: 850,
+    cursor: "pointer",
   },
-
-  activeNav: {
-    background: "white",
-    color: "black",
-    border: "none",
-    borderRadius: 14,
+  navActive: {
+    background: "#fff",
+    color: "#000",
+    border: "1px solid #fff",
+    borderRadius: 16,
     padding: "14px 16px",
-    fontWeight: 900,
-    cursor: "pointer",
     textAlign: "left",
+    fontWeight: 950,
+    cursor: "pointer",
+    boxShadow: "0 18px 50px rgba(255,255,255,0.12)",
   },
-
-  businessBox: {
+  businessCard: {
     marginTop: "auto",
-    background: "#111",
-    border: "1px solid #252525",
-    borderRadius: 18,
     padding: 18,
+    background: "rgba(255,255,255,0.045)",
+    border: "1px solid rgba(255,255,255,0.1)",
+    borderRadius: 22,
   },
-
-  main: {
-    flex: 1,
-    padding: 38,
-  },
-
-  header: {
+  content: { flex: 1, padding: 38 },
+  hero: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 22,
     marginBottom: 26,
   },
-
+  eyebrow: {
+    color: "#a3a3a3",
+    textTransform: "uppercase",
+    letterSpacing: 2,
+    fontSize: 12,
+    fontWeight: 900,
+    margin: 0,
+  },
   title: {
-    fontSize: 48,
-    letterSpacing: -2,
-    margin: "6px 0",
+    fontSize: 58,
+    lineHeight: 1,
+    letterSpacing: -3,
+    margin: "10px 0",
   },
-
   subtitle: {
-    color: "#aaa",
+    color: "#a3a3a3",
+    maxWidth: 720,
     fontSize: 17,
+    lineHeight: 1.6,
     margin: 0,
   },
-
-  muted: {
-    color: "#9b9b9b",
-    margin: 0,
+  primaryButton: {
+    background: "#fff",
+    color: "#000",
+    border: "none",
+    borderRadius: 18,
+    padding: "16px 22px",
+    fontWeight: 950,
+    cursor: "pointer",
+    boxShadow: "0 20px 60px rgba(255,255,255,0.14)",
   },
-
-  smallMuted: {
-    color: "#9b9b9b",
-    fontSize: 14,
-    margin: 0,
+  primaryButtonFull: {
+    background: "#fff",
+    color: "#000",
+    border: "none",
+    borderRadius: 16,
+    padding: 15,
+    fontWeight: 950,
+    cursor: "pointer",
+    width: "100%",
   },
-
-  stats: {
+  secondaryButtonFull: {
+    background: "rgba(255,255,255,0.08)",
+    color: "#fff",
+    border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: 16,
+    padding: 15,
+    fontWeight: 900,
+    cursor: "pointer",
+    width: "100%",
+  },
+  statGrid: {
     display: "grid",
-    gridTemplateColumns: "repeat(4, 1fr)",
+    gridTemplateColumns: "repeat(4,minmax(0,1fr))",
     gap: 16,
     marginBottom: 24,
   },
-
-  stat: {
-    background: "#111",
-    border: "1px solid #252525",
-    borderRadius: 24,
+  statCard: {
+    background: "linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.035))",
+    border: "1px solid rgba(255,255,255,0.09)",
+    borderRadius: 26,
     padding: 22,
   },
-
-  statValue: {
-    display: "block",
-    fontSize: 34,
-    marginTop: 10,
-  },
-
-  grid: {
+  statValue: { fontSize: 36, margin: "8px 0" },
+  muted: { color: "#9ca3af", margin: 0 },
+  mutedSmall: { color: "#9ca3af", fontSize: 13, margin: 0 },
+  dashboardGrid: {
     display: "grid",
-    gridTemplateColumns: "420px 1fr",
-    gap: 24,
+    gridTemplateColumns: "1fr 1fr",
+    gap: 22,
+  },
+  fleetGrid: {
+    display: "grid",
+    gridTemplateColumns: "430px 1fr",
+    gap: 22,
     alignItems: "start",
   },
-
-  card: {
-    background: "#111",
-    border: "1px solid #252525",
-    borderRadius: 28,
+  panel: {
+    background: "rgba(255,255,255,0.045)",
+    border: "1px solid rgba(255,255,255,0.09)",
+    borderRadius: 30,
     padding: 26,
+    boxShadow: "0 30px 100px rgba(0,0,0,0.25)",
   },
-
-  form: {
-    display: "grid",
-    gap: 13,
-    marginTop: 18,
+  panelHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 20,
   },
-
+  panelTitle: { fontSize: 29, margin: 0, letterSpacing: -0.8 },
+  formGrid: { display: "grid", gap: 13 },
   input: {
     width: "100%",
     background: "#050505",
-    color: "white",
-    border: "1px solid #303030",
-    borderRadius: 14,
-    padding: 14,
-    fontSize: 15,
+    color: "#fff",
+    border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: 16,
+    padding: 15,
     outline: "none",
+    fontSize: 14,
     boxSizing: "border-box",
   },
-
+  search: {
+    width: "100%",
+    background: "#050505",
+    color: "#fff",
+    border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: 18,
+    padding: 16,
+    outline: "none",
+    fontSize: 15,
+    boxSizing: "border-box",
+    marginBottom: 18,
+  },
   textarea: {
     width: "100%",
-    minHeight: 110,
+    minHeight: 95,
     background: "#050505",
-    color: "white",
-    border: "1px solid #303030",
-    borderRadius: 14,
-    padding: 14,
-    fontSize: 15,
+    color: "#fff",
+    border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: 16,
+    padding: 15,
     outline: "none",
+    fontSize: 14,
+    resize: "vertical",
     boxSizing: "border-box",
   },
-
-  preview: {
+  aiBox: {
     width: "100%",
-    height: 180,
-    objectFit: "cover",
-    borderRadius: 16,
-    border: "1px solid #303030",
+    minHeight: 170,
+    background: "#050505",
+    color: "#fff",
+    border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: 20,
+    padding: 18,
+    outline: "none",
+    fontSize: 15,
+    resize: "vertical",
+    boxSizing: "border-box",
+    marginBottom: 14,
   },
-
-  whiteButtonFull: {
-    background: "white",
-    color: "black",
-    border: "none",
-    borderRadius: 14,
-    padding: 15,
-    fontWeight: 900,
-    cursor: "pointer",
-    width: "100%",
+  previewBox: {
+    borderRadius: 20,
+    overflow: "hidden",
+    border: "1px solid rgba(255,255,255,0.1)",
   },
-
-  darkButtonFull: {
-    background: "#222",
-    color: "white",
-    border: "none",
-    borderRadius: 14,
-    padding: 15,
-    fontWeight: 900,
-    cursor: "pointer",
-    width: "100%",
-  },
-
-  list: {
-    display: "grid",
-    gap: 16,
-    marginTop: 18,
-  },
-
-  empty: {
-    padding: 35,
-    textAlign: "center",
-    color: "#777",
-    border: "1px dashed #333",
-    borderRadius: 18,
-  },
-
+  previewImg: { width: "100%", height: 190, objectFit: "cover", display: "block" },
+  carGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(360px,1fr))", gap: 18 },
   carCard: {
-    background: "#060606",
-    border: "1px solid #303030",
-    borderRadius: 24,
+    background: "rgba(0,0,0,0.45)",
+    border: "1px solid rgba(255,255,255,0.09)",
+    borderRadius: 26,
     overflow: "hidden",
   },
-
-  carImage: {
-    width: "100%",
-    height: 230,
-    objectFit: "cover",
-    display: "block",
-  },
-
+  carImageWrap: { position: "relative", height: 230, background: "#0b0b0b" },
+  carImage: { width: "100%", height: "100%", objectFit: "cover", display: "block" },
   noImage: {
-    height: 230,
-    background: "#0b0b0b",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    color: "#666",
+    height: "100%",
+    display: "grid",
+    placeItems: "center",
+    color: "#555",
     fontWeight: 900,
   },
-
-  carBody: {
-    padding: 22,
+  carBody: { padding: 20 },
+  carName: { margin: 0, fontSize: 26, letterSpacing: -0.6 },
+  priceGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 16 },
+  mini: {
+    background: "rgba(255,255,255,0.055)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    borderRadius: 16,
+    padding: 13,
   },
-
-  row: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 14,
-    alignItems: "center",
+  note: {
+    color: "#d4d4d4",
+    background: "rgba(255,255,255,0.045)",
+    borderRadius: 16,
+    padding: 13,
+    marginTop: 14,
+    lineHeight: 1.5,
   },
-
-  carTitle: {
-    fontSize: 28,
-    margin: 0,
-  },
-
-  available: {
-    background: "rgba(16,185,129,0.15)",
+  actions: { display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" },
+  greenButton: {
+    background: "rgba(16,185,129,0.14)",
     color: "#34d399",
+    border: "1px solid rgba(16,185,129,0.25)",
+    borderRadius: 14,
+    padding: "11px 13px",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  editButton: {
+    background: "#fff",
+    color: "#000",
+    border: "none",
+    borderRadius: 14,
+    padding: "11px 13px",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  deleteButton: {
+    background: "rgba(239,68,68,0.12)",
+    color: "#f87171",
+    border: "1px solid rgba(239,68,68,0.25)",
+    borderRadius: 14,
+    padding: "11px 13px",
+    fontWeight: 900,
+    cursor: "pointer",
+  },
+  availableBadge: {
+    position: "absolute",
+    top: 14,
+    right: 14,
+    background: "rgba(16,185,129,0.92)",
+    color: "#001b10",
     padding: "8px 12px",
     borderRadius: 999,
-    fontWeight: 900,
+    fontSize: 12,
+    fontWeight: 950,
     textTransform: "capitalize",
   },
-
-  booked: {
-    background: "rgba(251,191,36,0.15)",
+  rentedBadge: {
+    position: "absolute",
+    top: 14,
+    right: 14,
+    background: "rgba(251,191,36,0.95)",
+    color: "#1f1300",
+    padding: "8px 12px",
+    borderRadius: 999,
+    fontSize: 12,
+    fontWeight: 950,
+    textTransform: "capitalize",
+  },
+  maintenanceBadge: {
+    position: "absolute",
+    top: 14,
+    right: 14,
+    background: "rgba(248,113,113,0.95)",
+    color: "#1f0000",
+    padding: "8px 12px",
+    borderRadius: 999,
+    fontSize: 12,
+    fontWeight: 950,
+    textTransform: "capitalize",
+  },
+  empty: {
+    border: "1px dashed rgba(255,255,255,0.15)",
+    borderRadius: 22,
+    padding: 35,
+    color: "#777",
+    textAlign: "center",
+  },
+  leadList: { display: "grid", gap: 14 },
+  leadCard: {
+    background: "rgba(0,0,0,0.4)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    borderRadius: 20,
+    padding: 18,
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 18,
+  },
+  hotBadge: {
+    height: "fit-content",
+    background: "rgba(251,191,36,0.18)",
     color: "#fbbf24",
     padding: "8px 12px",
     borderRadius: 999,
-    fontWeight: 900,
-    textTransform: "capitalize",
+    fontSize: 12,
+    fontWeight: 950,
   },
-
-  miniGrid: {
+  newBadge: {
+    height: "fit-content",
+    background: "rgba(96,165,250,0.18)",
+    color: "#60a5fa",
+    padding: "8px 12px",
+    borderRadius: 999,
+    fontSize: 12,
+    fontWeight: 950,
+  },
+  rentalCard: {
+    background: "rgba(0,0,0,0.4)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    borderRadius: 22,
+    padding: 20,
+  },
+  compactList: { display: "grid", gap: 12 },
+  compactCar: {
     display: "grid",
-    gridTemplateColumns: "repeat(4, 1fr)",
-    gap: 12,
-    margin: "18px 0",
-  },
-
-  mini: {
-    background: "#111",
-    border: "1px solid #252525",
-    borderRadius: 16,
-    padding: 14,
-  },
-
-  info: {
-    background: "#111",
-    border: "1px solid #252525",
-    borderRadius: 14,
-    padding: 14,
-    color: "#ddd",
-    whiteSpace: "pre-wrap",
-    marginTop: 12,
-  },
-
-  actions: {
-    display: "flex",
-    justifyContent: "flex-end",
-    gap: 10,
-    marginTop: 18,
-    flexWrap: "wrap",
-  },
-
-  greenButton: {
-    background: "rgba(16,185,129,0.15)",
-    color: "#34d399",
-    border: "1px solid rgba(16,185,129,0.3)",
-    borderRadius: 12,
-    padding: "11px 15px",
-    cursor: "pointer",
-    fontWeight: 900,
-  },
-
-  greenButtonFull: {
-    background: "rgba(16,185,129,0.15)",
-    color: "#34d399",
-    border: "1px solid rgba(16,185,129,0.3)",
-    borderRadius: 12,
-    padding: "13px 15px",
-    cursor: "pointer",
-    fontWeight: 900,
-    width: "100%",
-    marginTop: 14,
-  },
-
-  editButton: {
-    background: "white",
-    color: "black",
-    border: "none",
-    borderRadius: 12,
-    padding: "11px 15px",
-    cursor: "pointer",
-    fontWeight: 900,
-  },
-
-  deleteButton: {
-    background: "rgba(255,0,0,0.12)",
-    color: "#ff5b5b",
-    border: "1px solid rgba(255,0,0,0.22)",
-    borderRadius: 12,
-    padding: "11px 15px",
-    cursor: "pointer",
-    fontWeight: 900,
-  },
-
-  chatMessages: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 12,
-    marginBottom: 18,
-    maxHeight: 300,
-    overflowY: "auto",
-  },
-
-  userBubble: {
-    alignSelf: "flex-end",
-    background: "white",
-    color: "black",
-    padding: 14,
-    borderRadius: 16,
-    maxWidth: "80%",
-    fontWeight: 700,
-  },
-
-  aiBubble: {
-    alignSelf: "flex-start",
-    background: "#181818",
-    border: "1px solid #303030",
-    padding: 14,
-    borderRadius: 16,
-    maxWidth: "80%",
-  },
-
-  leadCard: {
-    background: "#060606",
-    border: "1px solid #303030",
+    gridTemplateColumns: "70px 1fr auto",
+    alignItems: "center",
+    gap: 14,
+    background: "rgba(0,0,0,0.35)",
+    border: "1px solid rgba(255,255,255,0.08)",
     borderRadius: 18,
+    padding: 12,
+  },
+  thumb: {
+    width: 70,
+    height: 54,
+    borderRadius: 14,
+    overflow: "hidden",
+    background: "#111",
+    color: "#555",
+    display: "grid",
+    placeItems: "center",
+    fontSize: 11,
+  },
+  thumbImg: { width: "100%", height: "100%", objectFit: "cover" },
+  timeline: { display: "grid", gap: 18 },
+  timelineItem: { display: "flex", gap: 14, alignItems: "flex-start" },
+  dot: {
+    width: 11,
+    height: 11,
+    borderRadius: 999,
+    background: "#fff",
+    marginTop: 5,
+    boxShadow: "0 0 30px rgba(255,255,255,0.8)",
+  },
+  aiReply: {
+    marginTop: 18,
+    background: "rgba(255,255,255,0.055)",
+    border: "1px solid rgba(255,255,255,0.09)",
+    borderRadius: 20,
     padding: 18,
+    lineHeight: 1.6,
   },
 };
