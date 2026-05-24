@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import type { ChangeEvent, ClipboardEvent, CSSProperties, ReactNode } from "react";
 import { useParams } from "next/navigation";
 
 type Tab = "dashboard" | "fleet" | "rentals" | "leads" | "ai";
@@ -16,7 +17,8 @@ type Car = {
   weeklyPrice: string;
   deposit: string;
   mileage: string;
-  imageUrl: string;
+  imageData: string;
+  imageUrl?: string;
   notes: string;
   status: CarStatus;
   customerName?: string;
@@ -43,7 +45,7 @@ const emptyCar = {
   weeklyPrice: "",
   deposit: "",
   mileage: "",
-  imageUrl: "",
+  imageData: "",
   notes: "",
 };
 
@@ -67,7 +69,15 @@ export default function AdminDashboard() {
     const savedCars = localStorage.getItem(storageKey);
     const savedLeads = localStorage.getItem(leadsKey);
 
-    setCars(savedCars ? JSON.parse(savedCars) : []);
+    const parsedCars: Car[] = savedCars ? JSON.parse(savedCars) : [];
+
+    const upgradedCars = parsedCars.map((car) => ({
+      ...car,
+      imageData: car.imageData || car.imageUrl || "",
+      status: car.status || "available",
+    }));
+
+    setCars(upgradedCars);
     setLeads(savedLeads ? JSON.parse(savedLeads) : []);
   }, [storageKey, leadsKey]);
 
@@ -84,6 +94,39 @@ export default function AdminDashboard() {
   function resetForm() {
     setForm(emptyCar);
     setEditingId(null);
+  }
+
+  function fileToDataUrl(file: File) {
+    return new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleChooseImage(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const imageData = await fileToDataUrl(file);
+    setForm((prev) => ({ ...prev, imageData }));
+  }
+
+  async function handlePasteImage(event: ClipboardEvent<HTMLDivElement>) {
+    const items = event.clipboardData.items;
+
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (!file) return;
+
+        const imageData = await fileToDataUrl(file);
+        setForm((prev) => ({ ...prev, imageData }));
+        return;
+      }
+    }
+
+    alert("No image found. Copy an image first, then click the box and press CMD+V.");
   }
 
   function saveCar() {
@@ -123,7 +166,7 @@ export default function AdminDashboard() {
       weeklyPrice: car.weeklyPrice,
       deposit: car.deposit,
       mileage: car.mileage,
-      imageUrl: car.imageUrl,
+      imageData: car.imageData || car.imageUrl || "",
       notes: car.notes,
     });
     setTab("fleet");
@@ -188,10 +231,11 @@ export default function AdminDashboard() {
 
     const lowerQuestion = aiQuestion.toLowerCase();
 
-    const matchedCar = cars.find((car) =>
-      `${car.name} ${car.brand} ${car.model}`.toLowerCase().includes(lowerQuestion) ||
-      lowerQuestion.includes(car.name.toLowerCase()) ||
-      lowerQuestion.includes(car.model.toLowerCase())
+    const matchedCar = cars.find(
+      (car) =>
+        lowerQuestion.includes(car.name.toLowerCase()) ||
+        lowerQuestion.includes(car.model.toLowerCase()) ||
+        lowerQuestion.includes(car.brand.toLowerCase())
     );
 
     const reply = matchedCar
@@ -237,7 +281,9 @@ export default function AdminDashboard() {
         <div>
           <div style={styles.brandMark}>R</div>
           <h1 style={styles.logo}>RentAI</h1>
-          <p style={styles.sidebarText}>AI operating system for premium rental fleets.</p>
+          <p style={styles.sidebarText}>
+            AI operating system for premium rental fleets.
+          </p>
         </div>
 
         <nav style={styles.nav}>
@@ -292,13 +338,19 @@ export default function AdminDashboard() {
                 {cars.slice(0, 4).map((car) => (
                   <div key={car.id} style={styles.compactCar}>
                     <div style={styles.thumb}>
-                      {car.imageUrl ? <img src={car.imageUrl} style={styles.thumbImg} alt={car.name} /> : "No image"}
+                      {car.imageData ? (
+                        <img src={car.imageData} style={styles.thumbImg} alt={car.name} />
+                      ) : (
+                        "No image"
+                      )}
                     </div>
                     <div>
                       <strong>{car.name}</strong>
                       <p style={styles.mutedSmall}>AED {car.dailyPrice}/day</p>
                     </div>
-                    <span style={smallBadgeStyle(car.status || "available")}>{car.status || "available"}</span>
+                    <span style={smallBadgeStyle(car.status || "available")}>
+                      {car.status || "available"}
+                    </span>
                   </div>
                 ))}
                 {cars.length === 0 && <Empty text="No cars yet. Add your first vehicle." />}
@@ -309,7 +361,7 @@ export default function AdminDashboard() {
 
         {tab === "fleet" && (
           <section style={styles.fleetGrid}>
-            <Panel title={editingId ? "Edit Vehicle" : "Add Vehicle"} subtitle="Simple setup for rental businesses.">
+            <Panel title={editingId ? "Edit Vehicle" : "Add Vehicle"} subtitle="Paste or upload a car image. No links needed.">
               <div style={styles.formGrid}>
                 <Input placeholder="Car name e.g. Lamborghini Urus" value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
                 <Input placeholder="Brand e.g. Lamborghini" value={form.brand} onChange={(v) => setForm({ ...form, brand: v })} />
@@ -319,12 +371,38 @@ export default function AdminDashboard() {
                 <Input placeholder="Weekly price AED" value={form.weeklyPrice} onChange={(v) => setForm({ ...form, weeklyPrice: v })} />
                 <Input placeholder="Deposit AED" value={form.deposit} onChange={(v) => setForm({ ...form, deposit: v })} />
                 <Input placeholder="Mileage limit km/day" value={form.mileage} onChange={(v) => setForm({ ...form, mileage: v })} />
-                <Input placeholder="Image URL" value={form.imageUrl} onChange={(v) => setForm({ ...form, imageUrl: v })} />
 
-                {form.imageUrl && (
-                  <div style={styles.previewBox}>
-                    <img src={form.imageUrl} style={styles.previewImg} alt="Preview" />
-                  </div>
+                <div
+                  style={styles.pasteBox}
+                  tabIndex={0}
+                  onPaste={handlePasteImage}
+                >
+                  {form.imageData ? (
+                    <img src={form.imageData} style={styles.previewImg} alt="Car preview" />
+                  ) : (
+                    <div style={styles.pasteInner}>
+                      <strong>Paste car image here</strong>
+                      <p style={styles.mutedSmall}>
+                        Click this box, then press CMD+V. Or choose a file below.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleChooseImage}
+                  style={styles.input}
+                />
+
+                {form.imageData && (
+                  <button
+                    style={styles.secondaryButtonFull}
+                    onClick={() => setForm({ ...form, imageData: "" })}
+                  >
+                    Remove Image
+                  </button>
                 )}
 
                 <textarea
@@ -373,7 +451,7 @@ export default function AdminDashboard() {
         )}
 
         {tab === "rentals" && (
-          <Panel title="Rental Tracker" subtitle="Track which cars are currently rented and when they return.">
+          <Panel title="Rental Tracker" subtitle="Track rented cars and returns.">
             <div style={styles.carGrid}>
               {cars
                 .filter((car) => car.status === "rented")
@@ -409,7 +487,9 @@ export default function AdminDashboard() {
                       {lead.phone} • {lead.createdAt}
                     </p>
                   </div>
-                  <span style={lead.status === "hot" ? styles.hotBadge : styles.newBadge}>{lead.status}</span>
+                  <span style={lead.status === "hot" ? styles.hotBadge : styles.newBadge}>
+                    {lead.status}
+                  </span>
                 </div>
               ))}
             </div>
@@ -482,7 +562,7 @@ function Panel({
 }: {
   title: string;
   subtitle: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <div style={styles.panel}>
@@ -550,8 +630,8 @@ function CarCard({
   return (
     <article style={styles.carCard}>
       <div style={styles.carImageWrap}>
-        {car.imageUrl ? (
-          <img src={car.imageUrl} style={styles.carImage} alt={car.name} />
+        {car.imageData ? (
+          <img src={car.imageData} style={styles.carImage} alt={car.name} />
         ) : (
           <div style={styles.noImage}>No Image</div>
         )}
@@ -617,7 +697,7 @@ function smallBadgeStyle(status: CarStatus) {
   return styles.smallAvailableBadge;
 }
 
-const styles: Record<string, React.CSSProperties> = {
+const styles: Record<string, CSSProperties> = {
   page: {
     minHeight: "100vh",
     display: "flex",
@@ -794,6 +874,21 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 14,
     boxSizing: "border-box",
   },
+  pasteBox: {
+    minHeight: 220,
+    background: "#050505",
+    border: "1px dashed rgba(255,255,255,0.25)",
+    borderRadius: 20,
+    overflow: "hidden",
+    cursor: "copy",
+    display: "grid",
+    placeItems: "center",
+    outline: "none",
+  },
+  pasteInner: {
+    textAlign: "center",
+    padding: 24,
+  },
   search: {
     width: "100%",
     background: "#050505",
@@ -833,12 +928,13 @@ const styles: Record<string, React.CSSProperties> = {
     boxSizing: "border-box",
     marginBottom: 14,
   },
-  previewBox: {
-    borderRadius: 20,
-    overflow: "hidden",
-    border: "1px solid rgba(255,255,255,0.1)",
+  previewImg: {
+    width: "100%",
+    height: "100%",
+    minHeight: 220,
+    objectFit: "cover",
+    display: "block",
   },
-  previewImg: { width: "100%", height: 190, objectFit: "cover", display: "block" },
   carGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fill,minmax(360px,1fr))",
@@ -861,7 +957,12 @@ const styles: Record<string, React.CSSProperties> = {
   },
   carBody: { padding: 20 },
   carName: { margin: 0, fontSize: 26, letterSpacing: -0.6 },
-  priceGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 16 },
+  priceGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    gap: 10,
+    marginTop: 16,
+  },
   mini: {
     background: "rgba(255,255,255,0.055)",
     border: "1px solid rgba(255,255,255,0.08)",
