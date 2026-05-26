@@ -1,107 +1,91 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
-import { supabase } from "@/lib/supabase";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-function extractPhone(text: string) {
-  const match = text.match(/(\+?\d[\d\s-]{7,})/);
-  return match ? match[0] : "";
+// VERIFY WEBHOOK
+export async function GET(req: NextRequest) {
+  const searchParams = req.nextUrl.searchParams;
+
+  const mode = searchParams.get("hub.mode");
+  const token = searchParams.get("hub.verify_token");
+  const challenge = searchParams.get("hub.challenge");
+
+  if (
+    mode === "subscribe" &&
+    token === process.env.WHATSAPP_VERIFY_TOKEN
+  ) {
+    return new NextResponse(challenge, { status: 200 });
+  }
+
+  return new NextResponse("Verification failed", { status: 403 });
 }
 
-function extractRentalDays(text: string) {
-  const match = text.match(/(\d+)\s*(day|days)/i);
-  return match ? Number(match[1]) : null;
-}
-
-export async function POST(req: Request) {
+// RECEIVE MESSAGES
+export async function POST(req: NextRequest) {
   try {
-    const { message, business, history = [] } = await req.json();
+    const body = await req.json();
 
-    const { data: cars } = await supabase
-      .from("cars")
-      .select("*")
-      .eq("business_id", business);
+    const message =
+      body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
+    if (!message) {
+      return NextResponse.json({ ok: true });
+    }
+
+    const customerText = message.text?.body || "";
+    const customerPhone = message.from;
+
+    const ai = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
-          content: `
-You are an AI sales assistant for a Dubai luxury car rental company.
-
-You are in an ongoing conversation. Do not restart every message.
-Remember what the customer already said in the previous messages.
-
-Rules:
-- ONLY use cars from inventory.
-- Never invent prices, cars, photos, or availability.
-- If customer already gave phone/name/duration/date, do not ask again.
-- If booked, say when available again.
-- Keep replies short like WhatsApp.
-- Ask only for missing info: name, phone number, rental duration, start date.
-- Prices are in AED.
-
-Inventory:
-${JSON.stringify(cars, null, 2)}
-          `,
+          content:
+            "You are RentAI, an AI assistant for luxury car rentals in Dubai. Help customers book cars, ask for dates, prices, and availability.",
         },
-        ...history,
         {
           role: "user",
-          content: message,
+          content: customerText,
         },
       ],
     });
 
-    const aiReply = completion.choices[0].message.content || "No reply.";
+    const reply =
+      ai.choices[0]?.message?.content ||
+      "Thanks, our team will contact you shortly.";
 
-    const fullConversationText = [
-      ...history.map((m: any) => m.content),
-      message,
-    ].join(" ");
+    await fetch(
+      `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          to: customerPhone,
+          text: {
+            body: reply,
+          },
+        }),
+      }
+    );
 
-    const lowerText = fullConversationText.toLowerCase();
-
-    let requestedCar = "";
-
-    const matchedCar = cars?.find((car: any) => {
-      return (
-        lowerText.includes(car.name?.toLowerCase()) ||
-        lowerText.includes(car.brand?.toLowerCase()) ||
-        lowerText.includes(car.model?.toLowerCase())
-      );
-    });
-
-    if (matchedCar) {
-      requestedCar = matchedCar.name;
-    }
-
-    const phone = extractPhone(fullConversationText);
-    const rentalDays = extractRentalDays(fullConversationText);
-
-    await supabase.from("leads").insert({
-      business_id: business,
-      customer_message: fullConversationText,
-      ai_reply: aiReply,
-      car_requested: requestedCar,
-      lead_status: "new",
-      customer_phone: phone,
-      rental_days: rentalDays,
-    });
-
-    return NextResponse.json({
-      reply: aiReply,
-    });
+    return NextResponse.json({ success: true });
   } catch (error) {
-    console.error(error);
+    console.log(error);
 
     return NextResponse.json(
-      { reply: "Something went wrong." },
-      { status: 500 }
+      {
+        success: false,
+      },
+      {
+        status: 500,
+      }
     );
   }
 }
